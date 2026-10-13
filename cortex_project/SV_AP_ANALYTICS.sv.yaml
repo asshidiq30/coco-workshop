@@ -1,0 +1,262 @@
+name: SV_AP_ANALYTICS
+description: 'Accounts payable invoice analytics over the curated Silver layer. Supports vendor spend analysis, invoice aging, approval status tracking, and PO coverage reporting across SAP and Oracle source
+  systems. Amounts are in original transaction currency — no FX conversion is applied. Status values are source-specific and not fully normalized (Oracle uses VALIDATED alongside APPROVED). Grain: one row
+  per invoice per source system.
+
+  '
+tables:
+- name: SILVER_AP_INVOICES
+  description: 'Curated Silver-layer AP invoices from multiple ERP systems. Each row is one invoice. Currently contains SAP and Oracle; Baan and Workday planned.
+
+    '
+  base_table:
+    database: COCO_WORKSHOP
+    schema: PIPELINE_LAB
+    table: SILVER_AP_INVOICES
+  primary_key:
+    columns:
+    - SILVER_INVOICE_KEY
+  dimensions:
+  - name: COST_CENTER
+    description: 'Cost center code. Used as a proxy for business unit in questions about departmental spend or invoice volume. Format varies by source system.
+
+      '
+    expr: COST_CENTER
+    data_type: VARCHAR(20)
+    access_modifier: public_access
+  - name: CURRENCY_CODE
+    description: 'ISO 4217 currency code (USD, EUR, GBP). Amounts are NOT converted to a common currency. Always group by or filter on this when aggregating amounts.
+
+      '
+    expr: CURRENCY_CODE
+    data_type: VARCHAR(3)
+    access_modifier: public_access
+  - name: GL_ACCOUNT
+    description: 'General ledger account code from the source system. Each source uses its own numbering — do not compare GL codes across sources.
+
+      '
+    expr: GL_ACCOUNT
+    data_type: VARCHAR(20)
+    access_modifier: public_access
+  - name: HAS_PO
+    description: 'Whether the invoice is backed by a purchase order. Yes if PO_NUMBER is present, No otherwise. Use to analyze PO compliance rates.
+
+      '
+    expr: CASE WHEN PO_NUMBER IS NOT NULL THEN 'Yes' ELSE 'No' END
+    data_type: VARCHAR(3)
+    access_modifier: public_access
+  - name: INVOICE_ID
+    description: 'Source-system primary key for the invoice. Format varies by source (SAP: numeric, Oracle: ORA-prefixed). Not comparable across systems — use SILVER_INVOICE_KEY for unique identification.
+
+      '
+    expr: INVOICE_ID
+    data_type: VARCHAR(20)
+    access_modifier: public_access
+  - name: INVOICE_NUMBER
+    description: 'Business-facing invoice reference number that AP analysts and vendors use to look up invoices. This is the number printed on the invoice document.
+
+      '
+    expr: INVOICE_NUMBER
+    data_type: VARCHAR(30)
+    access_modifier: public_access
+  - name: INVOICE_STATUS
+    description: 'Approval status from the source system. Values are NOT fully normalized: SAP uses APPROVED/PENDING, Oracle uses VALIDATED/APPROVED/PENDING. When filtering for approved invoices, include
+      both APPROVED and VALIDATED.
+
+      '
+    expr: INVOICE_STATUS
+    data_type: VARCHAR(20)
+    access_modifier: public_access
+  - name: LINE_DESCRIPTION
+    description: 'Free-text description of the invoice line item or memo. May contain local-language text (Dutch, German) from European sources. Useful for keyword searches but not reliable for categorization.
+
+      '
+    expr: LINE_DESCRIPTION
+    data_type: VARCHAR(200)
+    access_modifier: public_access
+  - name: PAYMENT_TERMS
+    description: 'Payment terms as provided by the source. Format varies: SAP uses NET30/NET60, Oracle uses N30/N60. Not yet normalized — avoid grouping across sources without mapping.
+
+      '
+    expr: PAYMENT_TERMS
+    data_type: VARCHAR(16777216)
+    access_modifier: public_access
+  - name: PO_NUMBER
+    description: 'Purchase order number linked to this invoice. NULL for non-PO invoices (service invoices, utility bills). Use HAS_PO dimension for PO coverage analysis.
+
+      '
+    expr: PO_NUMBER
+    data_type: VARCHAR(20)
+    access_modifier: public_access
+  - name: SILVER_INVOICE_KEY
+    description: 'Surrogate key (MD5 hash) uniquely identifying each Silver row. Use as the primary key for deduplication and row-level lookups.
+
+      '
+    expr: SILVER_INVOICE_KEY
+    data_type: VARCHAR(32)
+    access_modifier: public_access
+  - name: SOURCE_SYSTEM
+    description: 'ERP system that originated the invoice. Current values: SAP, ORACLE. Planned: BAAN, WORKDAY. Use to segment any analysis by source.
+
+      '
+    expr: SOURCE_SYSTEM
+    data_type: VARCHAR(6)
+    access_modifier: public_access
+  - name: VENDOR_ID
+    description: 'Vendor identifier in the source system. Format varies by source (SAP: numeric, Oracle: ORA-V prefixed). Not comparable across sources — use VENDOR_NAME for cross-system vendor analysis.
+
+      '
+    expr: VENDOR_ID
+    data_type: VARCHAR(15)
+    access_modifier: public_access
+  - name: VENDOR_NAME
+    description: 'Full legal or trading name of the vendor. Primary vendor identifier for business users. May contain accented characters from European sources.
+
+      '
+    expr: VENDOR_NAME
+    data_type: VARCHAR(100)
+    access_modifier: public_access
+  facts:
+  - name: INVOICE_AMOUNT
+    description: 'Invoice amount in original transaction currency (see CURRENCY_CODE). Always positive; credit memos are separate rows with negative amounts. Do NOT sum across different currencies without
+      conversion.
+
+      '
+    expr: INVOICE_AMOUNT
+    data_type: NUMBER(18,2)
+    access_modifier: public_access
+  filters:
+  - name: APPROVED_INVOICES
+    description: 'Invoices that have been approved. Includes Oracle VALIDATED which is equivalent to APPROVED.
+
+      '
+    expr: INVOICE_STATUS IN ('APPROVED', 'VALIDATED')
+  - name: PENDING_INVOICES
+    description: 'Invoices still awaiting approval. Includes future Workday ''In Review'' status.
+
+      '
+    expr: INVOICE_STATUS IN ('PENDING', 'In Review')
+  - name: HAS_PURCHASE_ORDER
+    description: Invoices backed by a purchase order.
+    expr: PO_NUMBER IS NOT NULL
+  - name: LAST_12_MONTHS
+    description: Invoices from the trailing 12-month window.
+    expr: INVOICE_DATE >= DATEADD('month', -12, CURRENT_DATE())
+  time_dimensions:
+  - name: CREATED_AT
+    description: Timestamp (UTC) when the invoice record was created in the source system.
+    expr: CREATED_AT
+    data_type: TIMESTAMP_NTZ(9)
+    access_modifier: public_access
+  - name: DUE_DATE
+    description: 'Payment due date. Compare with INVOICE_DATE to calculate payment terms or days-to-pay aging.
+
+      '
+    expr: DUE_DATE
+    data_type: DATE
+    access_modifier: public_access
+  - name: INVOICE_DATE
+    description: 'Date the invoice was issued or received. Primary time axis for trending and period-over-period analysis.
+
+      '
+    expr: INVOICE_DATE
+    data_type: DATE
+    access_modifier: public_access
+  measures:
+  - name: TOTAL_SPEND
+    expr: SUM(INVOICE_AMOUNT)
+    data_type: NUMBER
+    description: 'Total invoice amount. Must be grouped by CURRENCY_CODE — summing across currencies produces a meaningless number.
+
+      '
+  - name: INVOICE_COUNT
+    expr: COUNT(*)
+    data_type: NUMBER
+    description: Total number of invoices.
+  - name: AVERAGE_INVOICE_AMOUNT
+    expr: AVG(INVOICE_AMOUNT)
+    data_type: NUMBER
+    description: Average invoice amount within a currency group.
+  - name: DISTINCT_VENDOR_COUNT
+    expr: COUNT(DISTINCT VENDOR_ID)
+    data_type: NUMBER
+    description: Number of unique vendors.
+  - name: NON_PO_INVOICE_COUNT
+    expr: SUM(CASE WHEN PO_NUMBER IS NULL THEN 1 ELSE 0 END)
+    data_type: NUMBER
+    description: Count of invoices without a linked purchase order.
+  - name: PENDING_AMOUNT
+    expr: SUM(CASE WHEN INVOICE_STATUS IN ('PENDING', 'In Review') THEN INVOICE_AMOUNT ELSE 0 END)
+    data_type: NUMBER
+    description: 'Total amount of invoices still awaiting approval. Includes Oracle PENDING and any future Workday In Review statuses.
+
+      '
+verified_queries:
+- name: TOTAL_SPEND_BY_VENDOR_TRAILING_12M
+  sql: 'SELECT VENDOR_NAME, CURRENCY_CODE, SUM(INVOICE_AMOUNT) AS TOTAL_SPEND FROM COCO_WORKSHOP.PIPELINE_LAB.SILVER_AP_INVOICES WHERE INVOICE_DATE >= DATEADD(''month'', -12, CURRENT_DATE()) GROUP BY VENDOR_NAME,
+    CURRENCY_CODE ORDER BY TOTAL_SPEND DESC
+
+    '
+  question: What is the total AP spend by vendor over the last 12 months?
+  verified_at: 1791881362
+  verified_by: Semantic Model Generator
+  use_as_onboarding_question: true
+- name: MONTHLY_INVOICE_COUNT_BY_COST_CENTER
+  sql: "SELECT DATE_TRUNC('month', INVOICE_DATE) AS INVOICE_MONTH,\n       COST_CENTER,\n       COUNT(*) AS INVOICE_COUNT\nFROM COCO_WORKSHOP.PIPELINE_LAB.SILVER_AP_INVOICES GROUP BY INVOICE_MONTH, COST_CENTER\
+    \ ORDER BY INVOICE_MONTH DESC\n"
+  question: What is the monthly invoice count by business unit?
+  verified_at: 1791881362
+  verified_by: Semantic Model Generator
+  use_as_onboarding_question: true
+- name: TOP_10_VENDORS_BY_UNPAID_AMOUNT
+  sql: "SELECT VENDOR_NAME, CURRENCY_CODE,\n       SUM(INVOICE_AMOUNT) AS UNPAID_AMOUNT,\n       COUNT(*) AS INVOICE_COUNT\nFROM COCO_WORKSHOP.PIPELINE_LAB.SILVER_AP_INVOICES WHERE INVOICE_STATUS IN ('PENDING',\
+    \ 'In Review') GROUP BY VENDOR_NAME, CURRENCY_CODE ORDER BY UNPAID_AMOUNT DESC LIMIT 10\n"
+  question: Which are the top 10 vendors by unpaid invoice amount?
+  verified_at: 1791881362
+  verified_by: Semantic Model Generator
+  use_as_onboarding_question: true
+- name: INVOICE_COUNT_BY_SOURCE_SYSTEM
+  sql: 'SELECT SOURCE_SYSTEM, COUNT(*) AS INVOICE_COUNT, COUNT(DISTINCT VENDOR_ID) AS VENDOR_COUNT
+
+    FROM COCO_WORKSHOP.PIPELINE_LAB.SILVER_AP_INVOICES
+
+    GROUP BY SOURCE_SYSTEM ORDER BY INVOICE_COUNT DESC
+
+    '
+  question: How many invoices and vendors does each source system have?
+  verified_at: 1791881362
+  verified_by: audit fix
+  use_as_onboarding_question: false
+- name: PO_COVERAGE_BY_SOURCE
+  sql: "SELECT SOURCE_SYSTEM,\n       COUNT(*) AS TOTAL_INVOICES,\n       SUM(CASE WHEN PO_NUMBER IS NOT NULL THEN 1 ELSE 0 END) AS WITH_PO,\n       ROUND(100.0 * SUM(CASE WHEN PO_NUMBER IS NOT NULL THEN\
+    \ 1 ELSE 0 END) / COUNT(*), 1) AS PO_COVERAGE_PCT\nFROM COCO_WORKSHOP.PIPELINE_LAB.SILVER_AP_INVOICES\nGROUP BY SOURCE_SYSTEM\n"
+  question: What percentage of invoices have a purchase order by source system?
+  verified_at: 1791881362
+  verified_by: audit fix
+  use_as_onboarding_question: false
+- name: SPEND_BY_CURRENCY
+  sql: 'SELECT CURRENCY_CODE, SUM(INVOICE_AMOUNT) AS TOTAL_AMOUNT, COUNT(*) AS INVOICE_COUNT
+
+    FROM COCO_WORKSHOP.PIPELINE_LAB.SILVER_AP_INVOICES
+
+    GROUP BY CURRENCY_CODE ORDER BY TOTAL_AMOUNT DESC
+
+    '
+  question: What is the total spend broken down by currency?
+  verified_at: 1791881362
+  verified_by: audit fix
+  use_as_onboarding_question: false
+- name: APPROVAL_STATUS_BREAKDOWN
+  sql: "SELECT SOURCE_SYSTEM, INVOICE_STATUS, COUNT(*) AS CNT,\n       SUM(INVOICE_AMOUNT) AS TOTAL_AMOUNT, CURRENCY_CODE\nFROM COCO_WORKSHOP.PIPELINE_LAB.SILVER_AP_INVOICES\nGROUP BY SOURCE_SYSTEM, INVOICE_STATUS,\
+    \ CURRENCY_CODE\nORDER BY SOURCE_SYSTEM, CNT DESC\n"
+  question: What is the approval status breakdown by source system?
+  verified_at: 1791881362
+  verified_by: audit fix
+  use_as_onboarding_question: false
+- name: AVERAGE_DAYS_TO_PAY
+  sql: "SELECT SOURCE_SYSTEM,\n       AVG(DATEDIFF('day', INVOICE_DATE, DUE_DATE)) AS AVG_DAYS_TO_DUE,\n       COUNT(*) AS INVOICE_COUNT\nFROM COCO_WORKSHOP.PIPELINE_LAB.SILVER_AP_INVOICES\nWHERE DUE_DATE\
+    \ IS NOT NULL AND INVOICE_DATE IS NOT NULL\nGROUP BY SOURCE_SYSTEM\n"
+  question: What is the average number of days between invoice date and due date by source?
+  verified_at: 1791881362
+  verified_by: audit fix
+  use_as_onboarding_question: false
